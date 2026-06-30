@@ -1,0 +1,236 @@
+---
+title: The coordination tools
+description: traintrack documentation — The coordination tools.
+---
+
+The traintrack MCP server exposes seven tools. A lead agent uses them to recruit workers, hand out tasks, and exchange messages. A worker — or a human-added live session — uses a smaller subset to join the team and communicate back.
+
+All tools operate on a shared SQLite channel. The channel file is resolved in this order:
+
+1. An explicit `--channel` path (if passed at startup).
+2. A named `--room`, stored at `~/.traintrack/rooms/<room>.db`.
+3. The `TRAINTRACK_CHANNEL` environment variable.
+4. The git repo root of the current working directory: `<root>/.traintrack/channel.db`.
+5. The current working directory as a fallback (non-git projects): `<cwd>/.traintrack/channel.db`.
+
+In the common case — no flags, inside a git repo — every session in the same repo resolves to the same file and shares one team automatically.
+
+---
+
+## Unread nudge
+
+Every tool result except `check_messages` and `await_results` appends a one-line notice when you have unread messages:
+
+```
+📨 2 unread messages from teammates — call check_messages to read them.
+```
+
+This means you learn about incoming messages the moment you call any tool, without polling explicitly. Call `check_messages` to read and clear them.
+
+---
+
+## spawn_worker
+
+Spawn a new worker agent in its own git worktree and assign it an initial task.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `agent` | string | yes | Agent type: `"claude"` or `"codex"`. |
+| `role` | string | yes | Role name for the worker, e.g. `"api"`, `"ui"`, `"tests"`. |
+| `task` | string | yes | The first task to assign the worker. |
+
+```json
+{
+  "name": "spawn_worker",
+  "arguments": {
+    "agent": "claude",
+    "role": "tests",
+    "task": "Write unit tests for src/channel/channel.ts. Reply with a summary when done."
+  }
+}
+```
+
+**What it does.** Creates a git worktree under the repo root, starts the agent process inside that worktree with the task pre-loaded, registers the worker in the team roster, and returns a text confirmation including the new handle (e.g. `claude-a3f9b2`).
+
+**The initial task is already assigned.** Do not follow a `spawn_worker` call with `delegate_task` to the same worker — the task was included in the spawn. Call `await_results` instead.
+
+---
+
+## await_results
+
+Block until one or more workers send replies, then return and mark them read.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `timeoutMs` | number | no | How long to wait, in milliseconds. Defaults to `120000` (2 minutes). |
+
+```json
+{
+  "name": "await_results",
+  "arguments": {
+    "timeoutMs": 180000
+  }
+}
+```
+
+**What it does.** Polls the channel every 250 ms. Returns the first non-empty batch of unread messages addressed to you, marked read. If the deadline passes with no messages, returns `"No results within the timeout."`.
+
+**When to use it.** After `spawn_worker` or `delegate_task`, call `await_results` to collect the reply. It does not distinguish worker results from regular messages — anything unread in your inbox is returned.
+
+---
+
+## delegate_task
+
+Assign a task to a teammate who is already on the team.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `to` | string | yes | Handle of the existing teammate. |
+| `task` | string | yes | Task description. |
+
+```json
+{
+  "name": "delegate_task",
+  "arguments": {
+    "to": "claude-a3f9b2",
+    "task": "Add error handling for the case where the db file is missing."
+  }
+}
+```
+
+**What it does.** Posts a message of type `task` to the teammate's inbox. They pick it up on their own cadence via `check_messages`. Returns an error if the handle is not found in the roster.
+
+**When to use it.** Use `delegate_task` to assign follow-on work to a worker that is already running. To recruit a new worker and give it its first task in one step, use `spawn_worker` instead.
+
+---
+
+## send_message
+
+Send a free-form message to any handle.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `to` | string | yes | Recipient handle. |
+| `body` | string | yes | Message text. |
+
+```json
+{
+  "name": "send_message",
+  "arguments": {
+    "to": "claude-a3f9b2",
+    "body": "Skip the integration tests for now — focus on unit tests only."
+  }
+}
+```
+
+**What it does.** Inserts the message into the channel. The recipient reads it the next time they call `check_messages`. This never interrupts the recipient's current work. The recipient handle is not validated against the roster — messages to unknown handles are silently stored.
+
+**When to use it.** For clarifications, corrections, or context updates that are not formal task assignments. For task assignments, `delegate_task` is clearer because it sets the message type to `task` and validates the recipient exists.
+
+---
+
+## check_messages
+
+Read and consume all unread messages addressed to you.
+
+**Parameters:** none.
+
+```json
+{
+  "name": "check_messages",
+  "arguments": {}
+}
+```
+
+**What it does.** Returns every unread message in your inbox and marks them all read, so subsequent calls only show new arrivals. Returns `"No messages."` when the inbox is empty.
+
+**When to use it.** Call it at natural checkpoints — after finishing a unit of work, before starting a new task, or when the unread nudge fires on another tool's result. Workers should call it regularly so they do not miss task assignments from the lead.
+
+---
+
+## list_team
+
+List all teammates currently registered in the channel.
+
+**Parameters:** none.
+
+```json
+{
+  "name": "list_team",
+  "arguments": {}
+}
+```
+
+**What it does.** Returns each member's handle, agent type, role, and status. When no members are registered yet, returns a prompt to use `spawn_worker`.
+
+Example output:
+
+```
+Team:
+- lead (claude, role: lead, active)
+- claude-a3f9b2 (claude, role: tests, active)
+```
+
+**When to use it.** Before calling `delegate_task`, to confirm the target handle exists. Also useful after `spawn_worker` to verify the new worker registered.
+
+---
+
+## join_team
+
+Register this session as a live member of an existing team.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `handle` | string | yes | Unique handle to register under, e.g. `"reviewer"`. |
+| `role` | string | yes | Your role on the team, e.g. `"qa"`, `"reviewer"`. |
+| `agent` | string | no | Agent type: `"claude"` or `"codex"`. Defaults to `"claude"`. |
+
+```json
+{
+  "name": "join_team",
+  "arguments": {
+    "handle": "reviewer",
+    "role": "reviewer"
+  }
+}
+```
+
+**What it does.** Adds you to the shared roster under the given handle and binds this MCP session to it. Returns an error if the handle is already taken — handles must be unique on the team. On success, returns the current team list.
+
+**When to use it.** When a human adds your session to a running team (rather than spawning you as a worker). After joining, call `check_messages` immediately to pick up anything addressed to you.
+
+Workers started by `spawn_worker` are already registered automatically — they do not need to call `join_team`.
+
+---
+
+## Typical lead flow
+
+```
+1. spawn_worker  → recruits a worker, assigns its first task
+2. await_results → blocks until the worker replies
+3. delegate_task → assigns follow-on work to the same or another worker
+4. await_results → collects the next reply
+5. send_message  → sends a non-task message if needed
+6. list_team     → checks who is still active
+```
+
+## Typical worker or live-session flow
+
+```
+1. join_team      → registers this session (skip if spawned by spawn_worker)
+2. check_messages → picks up any pending tasks
+3. ... do work ...
+4. send_message   → replies to the lead with results
+5. check_messages → checks for new instructions before the next unit of work
+```
+

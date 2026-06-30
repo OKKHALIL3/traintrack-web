@@ -1,0 +1,178 @@
+---
+title: CLI reference
+description: traintrack documentation — CLI reference.
+---
+
+The `traintrack` binary ships with the npm package. It provides six subcommands: `setup`, `team`, `inbox`, `init`, `worker`, and `join`.
+
+```
+traintrack setup [--all] [--yes] [--dry-run] [--tools-only] [--uninstall] [--home <path>]
+traintrack team [--room <name>] [--channel <path>]
+traintrack inbox --handle <handle> [--room <name>] [--channel <path>]
+traintrack init [--room <name>] [--channel <path>]
+traintrack worker --agent <claude|codex> --role <role> --handle <handle> [--channel <path>]
+traintrack join --handle <handle> --role <role> [--agent <claude|codex>] [--room <name>] [--channel <path>]
+```
+
+Run `traintrack --help` (or `traintrack -h` or `traintrack help`) to print this usage block.
+
+---
+
+## Channel resolution
+
+Every command that reads or writes team state opens a SQLite channel database. When you do not pass `--channel` or `--room`, traintrack resolves the path in this order:
+
+1. `--channel <path>` — explicit path, used as-is.
+2. `--room <name>` — a shared cross-project room at `~/.traintrack/rooms/<name>.db`. Non-alphanumeric characters (except `_` and `-`) are replaced with `_`. An empty name after sanitization becomes `global`.
+3. `TRAINTRACK_CHANNEL` environment variable.
+4. Git repo root — `<root>/.traintrack/channel.db`. traintrack runs `git rev-parse --show-toplevel` from the current working directory. Every terminal session anywhere inside the same repo lands on the same team without any flags.
+5. `cwd` fallback — `<cwd>/.traintrack/channel.db` when not inside a git repo.
+
+### Shared flags
+
+These flags are accepted by `team`, `inbox`, `init`, `worker`, and `join`.
+
+| Flag | Value | Description |
+|---|---|---|
+| `--channel` | path | Absolute or relative path to a `.db` file. Overrides all other resolution. |
+| `--room` | name | Named cross-project room in `~/.traintrack/rooms/`. |
+
+---
+
+## `setup`
+
+Wire traintrack into one or more agent CLIs on the local machine: its MCP server, a short team-awareness note, and the `/team` command — each written in that host's own config and command format. GitHub Copilot CLI is the one exception: it has no user-command surface, so it gets the MCP server and awareness note only (no `/team`).
+
+```sh
+traintrack setup
+traintrack setup --all --yes
+traintrack setup --dry-run
+traintrack setup --tools-only
+traintrack setup --uninstall
+traintrack setup --home /custom/home
+```
+
+Without `--all`, the command detects which agent CLIs are present and shows an interactive multi-select prompt, followed by a confirmation prompt before writing any files. Pass `--yes` to skip the confirmation prompt. With `--all`, both prompts are skipped entirely and all detected harnesses are selected.
+
+If no supported CLIs are detected, the command prints a message and exits without error.
+
+Supported harnesses (10): Claude Code, Codex, Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI. Detection looks for CLI binaries on PATH and checks for harness config directories under `--home` (default: `os.homedir()`).
+
+A single harness failing to configure does not abort the run — that harness is reported as an error in the summary, and the others proceed.
+
+| Flag | Description |
+|---|---|
+| `--all` | Select all detected harnesses, skipping both the selection and confirmation prompts. |
+| `--yes` | Skip the confirmation prompt (only relevant without `--all`). |
+| `--dry-run` | Detect and plan, but write no files. Reports what would change. |
+| `--tools-only` | Register the MCP server only; skip the awareness-prompt injection. |
+| `--uninstall` | Remove traintrack from the selected harnesses instead of adding it. |
+| `--home <path>` | Override the home directory used for config file location. Defaults to `os.homedir()`. |
+
+> **Note.** Only Claude Code and Codex are **beta** — live-verified end-to-end (spawn → work → collect) with real agents. The other eight harnesses are **alpha**: wired per each host's official MCP + command docs, but not yet live-verified. Check the output summary carefully.
+
+---
+
+## `init`
+
+Create the channel database for a workspace so it is ready before any agent session starts.
+
+```sh
+traintrack init
+traintrack init --room myproject
+traintrack init --channel /path/to/.traintrack/channel.db
+```
+
+Opens the channel at the resolved path (creating `.traintrack/` if it does not exist and initializing the schema), then closes it immediately. Prints the resolved path.
+
+This is optional. Any `worker` or `join` invocation also creates the channel on first use. `init` is useful for CI or project setup scripts where you want to provision the workspace ahead of time.
+
+No command-specific flags beyond the shared `--channel` / `--room`.
+
+---
+
+## `team`
+
+List every member currently registered on the team channel.
+
+```sh
+traintrack team
+traintrack team --room myproject
+```
+
+Prints the channel path, then one line per member in the format:
+
+```
+  - <handle>  (<agent>, role: <role>, <kind>, <status>)
+```
+
+If no members are registered yet, it prints a hint to open a traintrack-aware session or spawn a worker.
+
+No command-specific flags beyond the shared `--channel` / `--room`.
+
+---
+
+## `inbox`
+
+Print unread messages addressed to a handle. Does not mark messages as read.
+
+```sh
+traintrack inbox --handle alice
+traintrack inbox --handle alice --room myproject
+```
+
+If `--handle` is omitted, the command reads `TRAINTRACK_HANDLE` from the environment. If neither is set, the command exits with an error.
+
+Output format:
+
+```
+3 unread for alice:
+  [42] from bob: Please review the auth module.
+  [43] from carol: Done with the database migration.
+  [44] from bob: Can you take a look at PR #17?
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--handle` | Yes (or `TRAINTRACK_HANDLE`) | The recipient handle to read messages for. |
+
+---
+
+## `worker`
+
+Run a long-lived headless worker loop. The worker registers on the team, drains its inbox on each turn, calls the headless agent, and replies over the channel.
+
+```sh
+traintrack worker --agent claude --role "test writer" --handle alice
+traintrack worker --agent codex --role "backend" --handle bob --room myproject
+```
+
+The command blocks until interrupted. It does not exit on its own.
+
+| Flag | Required | Description |
+|---|---|---|
+| `--agent` | Yes | Agent to run. Must be exactly `claude` or `codex`. |
+| `--role` | Yes | Free-text role description registered on the team (e.g. `"test writer"`). |
+| `--handle` | Yes | Unique name for this worker on the team. |
+
+---
+
+## `join`
+
+Join an existing team as a live member and start responding to messages. Functionally identical to `worker` but registers the member with `kind: live` and rejects duplicate handles rather than clobbering the existing entry.
+
+```sh
+traintrack join --handle alice --role "lead"
+traintrack join --handle alice --role "lead" --agent claude --room myproject
+```
+
+The command blocks until interrupted, running the same responsive inbox loop as `worker`.
+
+If `--handle` is already registered on the team, the command exits with an error. Pick a unique handle.
+
+| Flag | Required | Description |
+|---|---|---|
+| `--handle` | Yes | Unique name for this member on the team. |
+| `--role` | Yes | Free-text role description (e.g. `"lead"`, `"reviewer"`). |
+| `--agent` | No | Agent to run. Must be `claude` or `codex`. Defaults to `codex`. |
+

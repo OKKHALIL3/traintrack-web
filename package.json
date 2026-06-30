@@ -1,0 +1,42 @@
+{
+  "name": "traintrack-web",
+  "version": "1.0.0",
+  "description": "Official website and docs for traintrack — a local-first coordination layer for AI coding agents.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "serve out",
+    "convert-docs": "node scripts/convert-docs.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OKKHALIL3/traintrack-web.git"
+  },
+  "keywords": ["traintrack", "docs", "fumadocs", "nextjs", "mcp", "ai-agents"],
+  "author": "",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/OKKHALIL3/traintrack-web/issues"
+  },
+  "homepage": "https://traintrack.dev/",
+  "dependencies": {
+    "@orama/orama": "^3.1.18",
+    "@tailwindcss/postcss": "^4.3.1",
+    "@types/mdx": "^2.0.14",
+    "@types/node": "^26.0.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "cnfast": "^0.0.8",
+    "fumadocs-core": "^16.0.0",
+    "fumadocs-mdx": "^15.0.13",
+    "fumadocs-ui": "^16.0.0",
+    "lucide-react": "^1.21.0",
+    "next": "^16.2.9",
+    "postcss": "^8.5.15",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "serve": "^14.2.6",
+    "tailwindcss": "^4.3.1",
+    "typescript": "^6.0.3"
+  }
+}

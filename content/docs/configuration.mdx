@@ -1,0 +1,172 @@
+---
+title: Configuration
+description: traintrack documentation — Configuration.
+---
+
+traintrack has no mandatory configuration file. Defaults are designed so that multiple sessions opened anywhere inside the same git repository automatically share one team channel, with no flags or paths required.
+
+This page covers every knob that exists: channel resolution, rooms, environment variables, and the `.traintrack/` directory layout.
+
+---
+
+## Channel resolution order
+
+Every traintrack process — the MCP server, a CLI worker, or a `traintrack team` query — must resolve a SQLite database file to use as the team channel. The resolution runs through five steps in order, stopping at the first match:
+
+| Priority | Source | Resolved path |
+|---|---|---|
+| 1 | `--channel <path>` flag | The literal path you supply |
+| 2 | `--room <name>` flag | `~/.traintrack/rooms/<name>.db` |
+| 3 | `TRAINTRACK_CHANNEL` env var | The literal path in the variable |
+| 4 | Git repo root | `<repo-root>/.traintrack/channel.db` |
+| 5 | Current working directory | `<cwd>/.traintrack/channel.db` |
+
+The git-root default (step 4) is the common case. It means every terminal you open inside the same project lands in the same channel without any flags. The lookup runs `git rev-parse --show-toplevel`; if that fails (you are not in a git work tree), the process falls back to `cwd` (step 5).
+
+Room names (step 2) are sanitized before becoming a filename: any character outside `[a-zA-Z0-9_-]` is replaced with `_`. An empty name after sanitization becomes `global`.
+
+---
+
+## Rooms
+
+A room is a named channel that lives outside any project, in your home directory:
+
+```
+~/.traintrack/rooms/<name>.db
+```
+
+Rooms let agents from different projects share a team. Pass `--room` to any CLI subcommand or to `traintrack init` to create one:
+
+```bash
+# Create a cross-project room named "infra"
+traintrack init --room infra
+
+# Inspect the team in that room
+traintrack team --room infra
+```
+
+The MCP server does not accept `--room` as a startup flag; it reads no CLI flags at all. Point it at the resolved path with `TRAINTRACK_CHANNEL` if you need a live session to join a room.
+
+---
+
+## Environment variables
+
+All variables are optional unless noted in the context below.
+
+### `TRAINTRACK_CHANNEL`
+
+Absolute path to a channel database file. Takes priority over the git-root and cwd defaults, but is overridden by an explicit `--channel` flag or a `--room` flag.
+
+```bash
+TRAINTRACK_CHANNEL=/shared/team.db traintrack team
+```
+
+### `TRAINTRACK_HANDLE`
+
+The handle (unique name on the team) that the MCP server registers for the current session. If unset, the server mints a handle of the form `<agent>-<6 hex chars>` (e.g. `claude-3f9a12`).
+
+The `traintrack inbox` CLI command also reads this variable as a fallback when `--handle` is not supplied.
+
+```bash
+TRAINTRACK_HANDLE=alice node dist/mcp-server.js
+```
+
+### `TRAINTRACK_AGENT`
+
+The agent type reported when the MCP server registers itself in the team roster. Defaults to `claude`. In practice it is one of the ten supported agent ids — `claude`, `codex`, `cursor`, `opencode`, `windsurf`, `cline`, `kiro`, `zed`, `continue`, or `copilot` — though the field is a plain string.
+
+```bash
+TRAINTRACK_AGENT=codex node dist/mcp-server.js
+```
+
+`traintrack setup` writes `TRAINTRACK_AGENT` into each harness's MCP config block (as an `env` entry alongside `command` and `args`) so each harness identifies itself correctly.
+
+### `TRAINTRACK_ROLE`
+
+The role string reported in the team roster when the MCP server registers itself. Defaults to `lead`.
+
+```bash
+TRAINTRACK_ROLE=reviewer node dist/mcp-server.js
+```
+
+### `TRAINTRACK_CLI`
+
+Absolute path to the traintrack CLI entry point (`dist/cli.js`). Used by `spawnWorker` when it launches a worker subprocess. If unset, the path is resolved relative to the running module file (three levels up from the spawn module, then `dist/cli.js`), which works both in-repo and when installed as a package.
+
+Set this when you want to pin workers to a specific build or when the default resolution does not find the right file:
+
+```bash
+TRAINTRACK_CLI=/home/user/.local/lib/traintrack/dist/cli.js
+```
+
+### `TRAINTRACK_CLAUDE_BIN`
+
+Path or name of the `claude` binary used when running a headless Claude turn. Defaults to `claude` (resolved via `PATH`).
+
+```bash
+TRAINTRACK_CLAUDE_BIN=/opt/claude/bin/claude
+```
+
+### `TRAINTRACK_CODEX_BIN`
+
+Path or name of the `codex` binary used when running a headless Codex turn. Defaults to `codex` (resolved via `PATH`).
+
+```bash
+TRAINTRACK_CODEX_BIN=/opt/codex/bin/codex
+```
+
+### `TRAINTRACK_SETUP_NO_PATH`
+
+Internal test seam. Set to `1` to make `traintrack setup` skip real `PATH` scanning and rely only on config-hint files when detecting installed harnesses. Not intended for normal use.
+
+---
+
+## The `.traintrack/` directory
+
+traintrack creates a `.traintrack/` directory at the git repo root (or cwd) the first time a channel is opened there. The layout is:
+
+```
+<repo-root>/
+  .traintrack/
+    channel.db          # SQLite-WAL database: messages, team roster
+    worktrees/
+      worker_<id>/      # git worktree for each spawned worker
+      worker_<id>/
+      ...
+```
+
+### `channel.db`
+
+The channel database. Created automatically by `traintrack init` or by any process that opens a `Channel` there for the first time. Uses SQLite WAL mode so multiple processes can read and write concurrently without blocking each other.
+
+You can inspect it with any SQLite client:
+
+```bash
+sqlite3 .traintrack/channel.db ".tables"
+sqlite3 .traintrack/channel.db "SELECT * FROM members;"
+sqlite3 .traintrack/channel.db "SELECT id, from_handle, to_handle, body FROM messages ORDER BY id DESC LIMIT 20;"
+```
+
+### `worktrees/`
+
+Each worker spawned by `spawn_worker` gets an isolated git worktree here, on a branch named `traintrack/<handle>`. The worktree is created with:
+
+```
+git worktree add .traintrack/worktrees/<handle> -b traintrack/<handle>
+```
+
+Worker handles take the form `worker_<8-char UUID segment>` (e.g. `worker_a1b2c3d4`). Workers run their headless agent turns inside their own worktree so file edits from parallel workers do not collide. Worktrees are not removed automatically; clean them up with:
+
+```bash
+git worktree remove .traintrack/worktrees/<handle>
+git branch -d traintrack/<handle>
+```
+
+---
+
+## Notes on headless agent support
+
+The `worker` subcommand and the `spawn_worker` MCP tool support `--agent claude` and `--agent codex`. These are the two live-verified (beta) paths; passing any other value is rejected with an error.
+
+The other eight agents — Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI — appear in the harness detection table used by `traintrack setup`, but they are wired as MCP hosts (the setup command writes their MCP config, a team-awareness note, and the `/team` command), not as headless worker agents. They are alpha: configured per each host's official docs but not yet live-verified. GitHub Copilot CLI is the one exception that gets MCP + awareness only, with no `/team` command. Running `--agent cursor` (or any of the other eight) as a worker is not supported.
+

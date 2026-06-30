@@ -1,0 +1,80 @@
+---
+title: Introduction
+description: traintrack documentation — Introduction.
+---
+
+traintrack is an MCP server and CLI that lets multiple AI coding agents — real `claude`, `codex`, and eight more CLI sessions — share a team. They can message each other, and one session can spawn and direct headless workers. No daemon, no wrapper command, no cloud relay.
+
+> **Alpha.** Commands, config formats, and the wire protocol can change between versions. Claude Code and Codex are **beta** — live-verified end-to-end. The other eight CLIs (Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI) are **alpha** — wired per each host's official docs but not yet live-verified. Pin a version if you depend on it.
+
+---
+
+## What it is
+
+traintrack has two parts:
+
+1. **An MCP server** that loads into your agent CLI and provides coordination tools: `list_team`, `send_message`, `check_messages`, `spawn_worker`, `delegate_task`, `await_results`, `join_team`.
+2. **A CLI** (`traintrack`) for setup, inspecting the team, reading inboxes, and running headless workers.
+
+Setup also installs a `/team` slash command so you can drive the team from chat — `/team` (status), `/team spawn`, `/team delegate`, `/team sync`, `/team send <handle>`, and `/team check`. Every wired CLI gets it except GitHub Copilot CLI, which has no user-command surface and so gets the MCP tools and awareness note only.
+
+You install it once, run `traintrack setup`, and then launch `claude` or `codex` the way you always do. Each session finds the shared channel automatically.
+
+---
+
+## The mental model
+
+**The channel is a SQLite file** at `<git-repo-root>/.traintrack/channel.db`. Every agent process that opens a project opens the same file. SQLite's WAL mode makes concurrent reads and writes safe. There is no server — the file is the bus.
+
+When an agent session starts with traintrack loaded, its MCP server registers the session as a live team member. When it ends, the member flips to offline. That is the entire presence model.
+
+**Agents are real sessions**, not simulated ones. A spawned worker is a `claude --print` or `codex exec` child process with its own git worktree (via `git worktree add`). It does real work, writes to the channel when done, and exits. The lead's `await_results` call polls the channel until replies arrive.
+
+---
+
+## Two modes
+
+### Peer mesh
+
+Open several `claude` or `codex` sessions in the same project. Each one auto-joins the team. You can tell one session to message another by handle; the recipient picks it up at its next turn via a `📨 N unread messages from teammates` nudge appended to every tool result.
+
+```bash
+traintrack team
+```
+```
+Team channel: /your/repo/.traintrack/channel.db
+  - claude-3f9a  (claude, role: lead, live, active)
+  - codex-7c12   (codex,  role: lead, live, active)
+```
+
+Hand-driven sessions cannot be interrupted mid-task — that is a CLI limit, not a traintrack limit. They pick up messages at their next natural turn.
+
+### Lead orchestration
+
+One session acts as a lead. It calls `spawn_worker` to launch headless workers into isolated git worktrees, delegates tasks, and calls `await_results` to block until workers reply. The lead then synthesizes the results.
+
+Workers truly auto-respond: they run a drain-turn-reply loop and can also message each other directly.
+
+---
+
+## Who it is for
+
+traintrack is for developers who already use `claude` or `codex` at the command line and want to run several agents on the same codebase without a new app or cloud account. It is useful when a task naturally splits across files or concerns (a parser, its tests, and a README, for example) and you want agents to work in parallel and coordinate.
+
+It is **not** a hosted orchestration platform. It is a local tool. Every worker is real LLM spend; the `traintrack team` command and the visible roster keep that visible.
+
+---
+
+## Install
+
+```bash
+npm install -g traintrack
+traintrack setup
+```
+
+`traintrack setup` detects which of the ten supported agent CLIs — Claude Code, Codex, Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI — are on your PATH, lets you pick which ones to wire, and registers the MCP server in each tool's config. It also injects a short team-awareness note (and the `/team` command, for every CLI except Copilot) in that host's own format. The command is idempotent and reversible:
+
+```bash
+traintrack setup --uninstall
+```
+

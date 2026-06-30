@@ -1,0 +1,194 @@
+---
+title: Installation
+description: traintrack documentation — Installation.
+---
+
+## Requirements
+
+- Node.js 18 or later
+- macOS or Linux
+- At least one supported agent CLI — Claude Code (`claude`), Codex (`codex`), Cursor (`cursor`), OpenCode (`opencode`), Windsurf (`windsurf`), Cline (`cline`), Kiro (`kiro`), Zed (`zed`), Continue (`cn`), or GitHub Copilot CLI (`copilot`)
+
+## Install the package
+
+```bash
+npm install -g traintrack
+```
+
+This installs the `traintrack` command globally.
+
+## Run setup
+
+```bash
+traintrack setup
+```
+
+Setup supports 10 agent CLIs — **Claude Code, Codex, Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI** — and detects which are present by probing PATH for each binary (`claude`, `codex`, `cursor`, `opencode`, …) and by checking for their config paths under `$HOME`. It then shows an interactive picker:
+
+```
+  › ◉ Claude Code  found 'claude' on PATH
+    ◉ Codex        found 'codex' on PATH
+    ◉ Cursor       found 'cursor' on PATH
+    ◉ Windsurf     found '.codeium/windsurf'
+    ◉ … 10 agents total
+  ↑/↓ move · space toggle · a all/none · enter confirm · esc cancel
+```
+
+Select the tools you want to wire up, confirm, and setup does three things for each:
+
+1. **Registers the MCP server** in that tool's config file.
+2. **Injects an awareness block** into that tool's instructions file, so the agent knows it is part of a team and how to use the coordination tools.
+3. **Installs the `/team` command** in that host's own command format — for every agent except GitHub Copilot CLI, which has no user-command surface (it gets the MCP server + awareness only).
+
+Setup is idempotent. Re-running it updates existing entries in place rather than duplicating them.
+
+Maturity tiers are honest: **Claude Code and Codex are beta** — the spawn → work → collect path is live-verified end-to-end with real agents. The other **eight are alpha** — wired per each host's official MCP + command docs and proven to install/uninstall cleanly, but not yet live-verified.
+
+### What setup writes, per CLI
+
+Config formats vary per host (mcpServers JSON, Codex TOML, OpenCode's `mcp` map, Zed's `context_servers`, Copilot's `type: "local"` + tools, Continue's standalone YAML), so the table below lists each agent's actual target paths. The `/team` command is installed for every agent **except GitHub Copilot CLI**, which has no user-command surface.
+
+| CLI | MCP config file | Awareness file | `/team` command file |
+|---|---|---|---|
+| Claude Code | `~/.claude.json` → `mcpServers.traintrack` | `~/.claude/CLAUDE.md` | `~/.claude/commands/team.md` |
+| Codex | `~/.codex/config.toml` → `[mcp_servers.traintrack]` | `~/.codex/AGENTS.md` | `~/.codex/prompts/team.md` |
+| Cursor | `~/.cursor/mcp.json` → `mcpServers.traintrack` | `~/.cursor/rules/traintrack.md` | `~/.cursor/commands/team.md` |
+| OpenCode | `~/.config/opencode/opencode.json` → `mcp.traintrack` | `~/.config/opencode/AGENTS.md` | `~/.config/opencode/commands/team.md` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` → `mcpServers.traintrack` | `~/.windsurf/rules/traintrack.md` | `~/.codeium/windsurf/global_workflows/team.md` |
+| Cline | `~/.cline/mcp.json` → `mcpServers.traintrack` | `~/.clinerules/traintrack.md` | `~/Documents/Cline/Workflows/team.md` |
+| Kiro | `~/.kiro/settings/mcp.json` → `mcpServers.traintrack` | `~/.kiro/steering/traintrack.md` | `~/.kiro/steering/team.md` |
+| Zed | `~/.config/zed/settings.json` → `context_servers.traintrack` | `~/.config/zed/AGENTS.md` | `~/.agents/skills/team/SKILL.md` |
+| Continue | `~/.continue/mcpServers/traintrack.yaml` | `~/.continue/rules/traintrack.md` | `~/.continue/prompts/team.md` |
+| GitHub Copilot CLI | `~/.copilot/mcp-config.json` → `mcpServers.traintrack` | `~/.copilot/copilot-instructions.md` | — (no command surface) |
+
+Some hosts need frontmatter for a rule/steering file to auto-attach, so setup prepends it: Cursor (`---\nalwaysApply: true\n---`), Kiro (`---\ninclusion: always\n---`), and Continue (`---\nname: traintrack\nalwaysApply: true\n---`).
+
+The awareness block is fenced by marker comments. Markdown awareness files use HTML-comment markers (`<!-- >>> traintrack >>> -->` / `<!-- <<< traintrack <<< -->`). Codex's `AGENTS.md` uses `#`-prefixed markers (`# >>> traintrack >>>` / `# <<< traintrack <<<`) because it is parsed in a context where `#` is the conventional comment character for that harness. Uninstall removes these markers and everything between them.
+
+## Setup flags
+
+### `--all`
+
+Skip the interactive picker and configure every detected CLI without prompting (skips both the picker and the confirmation prompt).
+
+```bash
+traintrack setup --all
+```
+
+### `--yes`
+
+Skip the final confirmation prompt after the picker. Still shows the picker itself.
+
+```bash
+traintrack setup --yes
+```
+
+### `--dry-run`
+
+Print what setup would write without touching any files. Useful for auditing before committing.
+
+```bash
+traintrack setup --dry-run
+```
+
+### `--tools-only`
+
+Register the MCP server but skip the awareness block injection. Use this if you manage your own instructions files and do not want setup to modify them.
+
+```bash
+traintrack setup --tools-only
+```
+
+### `--home <path>`
+
+Override the home directory used for config file resolution. By default this is `os.homedir()`. Mainly useful for testing or for non-standard setups where config files live elsewhere.
+
+```bash
+traintrack setup --home /some/other/home
+```
+
+### `--uninstall`
+
+Remove traintrack from the selected CLIs. Shows the same picker, then removes the MCP entry and the awareness block from each selected tool's files.
+
+```bash
+traintrack setup --uninstall
+```
+
+## Uninstall
+
+```bash
+traintrack setup --uninstall
+```
+
+Uninstall reverses setup exactly: it removes the `mcpServers.traintrack` entry from each MCP config file, removes the marker-fenced awareness block from each instructions file, and strips the Cursor MDC frontmatter if setup added it. Files that are left empty after removal are not deleted.
+
+To uninstall and skip the confirmation prompt:
+
+```bash
+traintrack setup --uninstall --yes
+```
+
+## Manual configuration
+
+If you prefer to configure each CLI by hand rather than running the wizard, register the MCP server directly. First resolve the absolute path to the server file:
+
+```bash
+node -e "console.log(require.resolve('traintrack/dist/mcp-server.js'))"
+```
+
+Use that absolute path in place of `<abs>` below. The `TRAINTRACK_AGENT` environment variable tells the server which agent type this session is, so it can register the right kind of presence in the team channel.
+
+### Claude Code — `~/.claude.json`
+
+Add the `traintrack` entry under `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "traintrack": {
+      "command": "node",
+      "args": ["<abs>/dist/mcp-server.js"],
+      "env": { "TRAINTRACK_AGENT": "claude" }
+    }
+  }
+}
+```
+
+Setup writes the full path to the `node` binary in place of `"node"` above; either form works for manual configuration.
+
+Setup also injects an awareness block into `~/.claude/CLAUDE.md`. If you skip the wizard, add that block yourself or use `traintrack setup --tools-only` to wire only the MCP entry and leave the instructions file untouched.
+
+### Codex — `~/.codex/config.toml`
+
+Add the `traintrack` section under `mcp_servers`:
+
+```toml
+[mcp_servers.traintrack]
+command = "node"
+args = ["<abs>/dist/mcp-server.js"]
+env = { TRAINTRACK_AGENT = "codex" }
+```
+
+Setup also injects an awareness block into `~/.codex/AGENTS.md`.
+
+### The other eight CLIs
+
+Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI are wired by `setup` (mesh send/receive plus the `/team` command, except Copilot which gets MCP + awareness only). They are **alpha** — configured per each host's official MCP + command docs but not yet live-verified end-to-end, and spawning them as headless workers is not yet supported. Their exact config paths and formats are in the [per-CLI table above](#what-setup-writes-per-cli); run `traintrack setup --dry-run` to see the precise content setup would write for each.
+
+## Verify the setup
+
+After running setup, open one of the configured CLIs and run:
+
+```
+list_team
+```
+
+If the MCP server loaded correctly, the tool returns the current project's team (empty until another session joins). If the tool is not found, check that the config file was written and that the CLI has reloaded its MCP config (some CLIs require a restart).
+
+To see what setup would change on a future re-run without touching anything:
+
+```bash
+traintrack setup --dry-run
+```
+

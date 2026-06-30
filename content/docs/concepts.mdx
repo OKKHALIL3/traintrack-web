@@ -1,0 +1,198 @@
+---
+title: Core concepts
+description: traintrack documentation — Core concepts.
+---
+
+traintrack coordinates a team of AI agents through a small set of concrete primitives. This page explains each one, why it exists, and how the parts fit together. Read this before the API reference.
+
+---
+
+## The channel
+
+The channel is a SQLite database file that every member of a team reads from and writes to. All messages and roster entries live in this one file — there is no network service, no daemon, no broker.
+
+SQLite runs in WAL (write-ahead log) mode with a 5-second busy timeout so multiple processes can write concurrently without corrupting data.
+
+### Where the channel file lives
+
+traintrack resolves the channel path automatically using the following order of precedence:
+
+1. An explicit `--channel <path>` flag
+2. A named room: `--room <name>` → `~/.traintrack/rooms/<name>.db`
+3. The `TRAINTRACK_CHANNEL` environment variable
+4. The **git repository root** → `<root>/.traintrack/channel.db` (the common case)
+5. The current working directory → `<cwd>/.traintrack/channel.db` (non-git fallback)
+
+The git-root rule is the key design decision. Every terminal or process you open anywhere inside a project lands on the same `channel.db` automatically — no path argument needed. Two sessions in `src/` and `docs/` share a team because both run `git rev-parse --show-toplevel` and get the same answer.
+
+```bash
+# All three of these resolve to the same .traintrack/channel.db
+# (when opened inside the same git repo)
+cd /path/to/repo && traintrack team
+cd /path/to/repo/src && traintrack team
+cd /path/to/repo/docs && traintrack team
+```
+
+### Rooms
+
+A room is a named cross-project channel stored in `~/.traintrack/rooms/<name>.db`. Use rooms when you want a team that spans multiple repositories.
+
+```bash
+traintrack team --room my-shared-room
+```
+
+Room names are sanitized before becoming a filename: any character outside `[a-zA-Z0-9_-]` is replaced with `_`.
+
+---
+
+## Members
+
+Every participant in a team is a **member**. A member record stores:
+
+| Field | What it holds |
+|---|---|
+| `handle` | Unique string identifier within this channel |
+| `agent` | The agent binary: `claude`, `codex`, or a custom name |
+| `role` | A human-readable role label, e.g. `lead`, `api`, `ui` |
+| `kind` | Either `live` or `headless` |
+| `status` | `active` or `offline` |
+| `worktree` | The working directory this member is bound to (may be null) |
+
+The distinction between `live` and `headless` is the most important field.
+
+### Live members
+
+A live member is an interactive session — typically a Claude Code or Codex session driven by a human. When the MCP server starts, it registers the current session as a live member immediately. The `handle` is either `TRAINTRACK_HANDLE` (if set) or a random `<agent>-<hex>` string minted on startup. The `agent` is `TRAINTRACK_AGENT` (default `claude`); the `role` is `TRAINTRACK_ROLE` (default `lead`).
+
+```bash
+TRAINTRACK_HANDLE=alice TRAINTRACK_ROLE=lead TRAINTRACK_AGENT=claude traintrack mcp-server
+```
+
+When the session exits (its stdin closes), traintrack marks the member `offline` so teammates see an accurate roster.
+
+### Headless members
+
+A headless member is a background worker process. It has no interactive terminal. The lead spawns headless workers via `spawn_worker`; they register themselves in the channel at startup. Headless workers are the engine of parallelism — multiple can run at once, each in its own git worktree.
+
+---
+
+## Auto-presence
+
+Members do not need to manually join or announce themselves. When any traintrack process starts:
+
+- **Live sessions** (the MCP server) call `addMember` with `kind: 'live'` and `status: 'active'` before processing any tool calls. On exit, they call `setStatus(handle, 'offline')`.
+- **Headless workers** call `addMember` with `kind: 'headless'` and `status: 'active'` at the top of their run loop.
+
+This means `list_team` always reflects the current state without any coordination ceremony.
+
+The only manual action is `join_team`, which is for an existing session that was added to a running team after it started — for example, a human brings a second Claude session into a team mid-session and needs it to register under a specific handle and role.
+
+---
+
+## Message delivery
+
+All messages are rows in the `messages` table. A message has a `from_handle`, a `to_handle`, a `body`, a `type` (`message` or `task`), and a `read` flag.
+
+Delivery works differently for live and headless members, and the difference matters.
+
+### Headless workers: guaranteed delivery via polling
+
+A headless worker runs a poll loop. On every cycle (default: every 3 seconds):
+
+1. Build the current team roster briefing from `listMembers()` — refreshed each cycle so new teammates who joined after spawn are included.
+2. Call `getUnread(handle)` to drain all unread messages from the inbox.
+3. If the inbox is empty, sleep and repeat.
+4. Build a prompt from those messages with the roster briefing prepended.
+5. Run a fresh headless agent turn: `claude --print --output-format stream-json --verbose <prompt>` or `codex exec [resume <id>] --json --dangerously-bypass-approvals-and-sandbox <prompt>`.
+6. Post the agent's reply back to each original sender (or to a `@handle` address if the reply opens with one).
+7. Mark all drained messages read (`markRead`) **after** the turn completes.
+
+Marking read only after a successful turn means a crash mid-turn leaves the messages unread. The next cycle retries them. No message is silently dropped.
+
+The codex `--dangerously-bypass-approvals-and-sandbox` flag is required for unattended MCP tool calls; without it, unattended approvals are auto-cancelled. The worker always passes this flag.
+
+### Live sessions: best-effort + the unread nudge
+
+A live session (running inside a human's TUI) does not poll. It processes messages only when the human triggers a tool call. To compensate, traintrack appends an unread nudge to every tool result when there are waiting messages:
+
+```
+📨 3 unread messages from teammates — call check_messages to read them.
+```
+
+This nudge fires on every tool call **except** `check_messages` and `await_results`, which already surface messages. It is best-effort: a live session that never calls a tool will not see incoming messages until it does.
+
+---
+
+## Worktrees for spawned workers
+
+When a lead calls `spawn_worker`, traintrack creates a **git worktree** for the new worker before launching it. The steps are:
+
+1. Validate that the repo root has a `.git` directory.
+2. Mint a unique handle: `worker_<8-char UUID>`.
+3. Run `git worktree add <root>/.traintrack/worktrees/<handle> -b traintrack/<handle>`.
+4. Register the worker in the channel (`addMember`, `kind: 'headless'`).
+5. Post the seed task message to the worker's inbox.
+6. Spawn `node <cli-path> worker --agent <agent> --role <role> --handle <handle> --channel <db>` in the worktree directory, detached and unreffed. The `<cli-path>` is resolved from the `TRAINTRACK_CLI` environment variable if set, otherwise from the path of the current module's install location.
+
+Worktrees exist so each worker has its own filesystem context. Without a separate worktree, two workers editing the same file in the same directory would conflict. The lead's checkout is never touched.
+
+```
+repo/
+  .traintrack/
+    channel.db
+    worktrees/
+      worker_a1b2c3d4/   ← its own branch: traintrack/worker_a1b2c3d4
+      worker_e5f6g7h8/
+```
+
+If the repo root does not have a `.git` directory, `spawn_worker` throws immediately. Spawning workers requires a git repo.
+
+---
+
+## The MCP server
+
+traintrack exposes its coordination primitives as a **stdio MCP server** — newline-delimited JSON-RPC 2.0 over stdin/stdout. Claude Code and other MCP-capable clients connect to it as a tool provider. The server is registered in each harness's MCP config by `traintrack setup`; the harness launches it as a long-lived child process.
+
+The server exposes seven tools:
+
+| Tool | What it does |
+|---|---|
+| `spawn_worker` | Create a worktree, register a member, and launch a headless worker |
+| `await_results` | Poll the lead's inbox until a reply arrives or the timeout expires |
+| `send_message` | Post a message to one teammate by handle |
+| `check_messages` | Drain and return all unread messages addressed to this session |
+| `list_team` | Return the full member roster |
+| `delegate_task` | Post a task-type message to an existing teammate |
+| `join_team` | Register this live session in the channel under a given handle and role |
+
+The server owns a `Channel` instance directly. There is no intermediate runtime or RPC layer.
+
+---
+
+## Putting it together
+
+A typical session looks like this:
+
+```bash
+# Install traintrack into your harnesses (Claude Code, Codex, etc.)
+traintrack setup
+
+# Then open your project in Claude Code — it auto-joins the team.
+# Inside the agent session, use the MCP tools:
+# list_team → see who is on the team
+# spawn_worker agent=claude role=api task="implement /users endpoint"
+#   → creates worktree, spawns headless worker
+# await_results timeoutMs=120000
+#   → blocks until the worker replies to the lead's inbox
+# send_message to=worker_a1b2c3d4 body="add pagination"
+# check_messages → drain any replies
+```
+
+The headless worker, running in its worktree, drains the inbox every 3 seconds, rebuilds the roster briefing, executes a Claude turn with the task as its prompt, and posts the result back. The lead collects it with `await_results` or `check_messages`.
+
+---
+
+## Alpha status notes
+
+Codex support (`agent: "codex"`) is present in the codebase and the headless argv builder handles it, but it has not been as thoroughly validated as Claude in live multi-worker scenarios. Treat it as experimental. If you encounter issues with codex resume behavior, verify that your codex binary supports `exec resume <id> --json --dangerously-bypass-approvals-and-sandbox`.
+

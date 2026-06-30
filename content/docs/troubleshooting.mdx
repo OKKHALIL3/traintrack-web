@@ -1,0 +1,185 @@
+---
+title: Troubleshooting
+description: traintrack documentation — Troubleshooting.
+---
+
+---
+
+## My hand-started session is not showing up on the team
+
+**Symptom:** You open a `claude` or `codex` session manually and then run `traintrack team`, but the session is absent from the list.
+
+**Cause:** traintrack registers a session as a team member only when it loads the traintrack MCP server on startup. That happens automatically only if `traintrack setup` has already wired the MCP server into that CLI's config. Sessions started before setup, or outside a git repo, do not auto-join.
+
+**Fix:**
+
+1. Confirm setup ran for the CLI you are using:
+
+   ```bash
+   traintrack setup --dry-run
+   ```
+
+   The dry-run output shows exactly what is wired and what is missing. If the MCP server is absent, run `traintrack setup` (without `--dry-run`) and restart the session.
+
+2. Confirm the session is inside a git repo. traintrack resolves the channel from the git repo root — it calls `git rev-parse --show-toplevel` from the current working directory. If there is no `.git` ancestor, the channel path falls back to the current directory, which may not match the channel your other sessions are using.
+
+   ```bash
+   git rev-parse --show-toplevel
+   ```
+
+   If this fails, initialize a repo first or use `--room` to connect sessions that live outside any repo (see "Two sessions in different projects can't see each other" below).
+
+3. Check the channel path your sessions are resolving to:
+
+   ```bash
+   traintrack team
+   ```
+
+   The first output line is the channel path, e.g.:
+
+   ```
+   Team channel: /your/repo/.traintrack/channel.db
+   ```
+
+   Every session must be resolving to the same file. If they differ, your sessions are on separate channels and cannot see each other.
+
+---
+
+## Two sessions in different projects can't see each other
+
+**Cause:** This is by design. The default channel is scoped to the git repo root (`<repo>/.traintrack/channel.db`). Sessions in different repos resolve to different files and are fully isolated from each other.
+
+**Fix:** Use `--room` to attach all sessions to a shared cross-project channel stored in your home directory (`~/.traintrack/rooms/<name>.db`):
+
+```bash
+traintrack team --room shared
+```
+
+Pass the same `--room` flag when running any other traintrack command:
+
+```bash
+traintrack inbox --handle my-handle --room shared
+```
+
+For MCP tool calls inside an agent session, set the `TRAINTRACK_CHANNEL` environment variable before launching the agent so the MCP server picks up the correct path:
+
+```bash
+TRAINTRACK_CHANNEL=$HOME/.traintrack/rooms/shared.db claude
+```
+
+Room names are filesystem-sanitized — characters outside `[a-zA-Z0-9_-]` become underscores.
+
+---
+
+## A spawned worker never replied
+
+**Symptom:** `spawn_worker` returned a handle, but `await_results` never resolves, or the handle stays offline in `list_team`.
+
+There are several possible causes. Work through them in order.
+
+### The directory is not a git repo
+
+`spawnWorker` checks for a `.git` entry at the repo root before doing anything else. If it is missing, the call throws and no worker process is launched. Make sure the project is a proper git repo:
+
+```bash
+git rev-parse --show-toplevel
+ls .git
+```
+
+### The codex bypass flag is missing
+
+Codex requires `--dangerously-bypass-approvals-and-sandbox` for unattended MCP tool calls. Without it, every tool call a headless worker attempts auto-cancels and the worker appears to hang (tracked upstream as openai/codex #24135). traintrack passes this flag by default when spawning a codex worker. If you are running codex manually in a worker role, add the flag yourself:
+
+```bash
+codex exec --json --dangerously-bypass-approvals-and-sandbox "<your prompt>"
+```
+
+### The worker is not on the team yet
+
+Spawning is asynchronous. The worker process starts in a new git worktree and must initialize before it registers. Wait a few seconds, then check:
+
+```bash
+traintrack team
+```
+
+If the handle still does not appear with `status: active`, the process likely exited early. Check for errors by looking at the worktree directory:
+
+```bash
+ls .traintrack/worktrees/
+```
+
+Each spawned worker gets a directory under `.traintrack/worktrees/<handle>`. If the directory is missing, `git worktree add` failed — usually because the branch `traintrack/<handle>` already exists from a previous run.
+
+Clean up stale worktrees and branches before retrying:
+
+```bash
+git worktree list
+git worktree remove .traintrack/worktrees/<handle> --force
+git branch -D traintrack/<handle>
+```
+
+### The agent binary is not on PATH
+
+The worker process is launched as a detached child using `claude` or `codex` resolved from `PATH` (or from `TRAINTRACK_CLAUDE_BIN` / `TRAINTRACK_CODEX_BIN` if set). If the binary is not findable in the environment the Node process inherits, the worker exits immediately.
+
+```bash
+which claude
+which codex
+```
+
+If a binary is installed but not on the default `PATH`, set the override:
+
+```bash
+export TRAINTRACK_CLAUDE_BIN=/path/to/claude
+export TRAINTRACK_CODEX_BIN=/path/to/codex
+```
+
+---
+
+## Alpha agents can't be spawned as headless workers yet
+
+**Cause:** Headless worker spawning is live only for the two beta agents, Claude Code and Codex. The other eight supported CLIs — Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI — are alpha: wired per each host's official docs but not yet wired for headless spawning. This is a planned feature.
+
+What `traintrack setup` does today for the alpha agents is wire up the MCP server, inject the team-awareness note, and install the `/team` command (every agent except GitHub Copilot CLI, which has no user-command surface and gets MCP + awareness only). Those sessions can join the peer mesh and use `list_team`, `send_message`, and `check_messages` like any other member. The spawn path (`spawn_worker` with an alpha agent id such as `agent: "cursor"`) is not wired and will fail.
+
+If you have an alpha-agent session running, you can add it to a team manually with `join_team` from inside that session, and it will be visible to teammates and can exchange messages. It just cannot be launched headlessly by a lead agent yet.
+
+Alpha mesh support is wired per each host's official docs but not yet live-verified end-to-end. Confirm it works with your installed versions before depending on it.
+
+---
+
+## General diagnostics
+
+Print the full team state for the current project:
+
+```bash
+traintrack team
+```
+
+Print unread messages for a specific handle:
+
+```bash
+traintrack inbox --handle <handle>
+```
+
+Check which channel path would be resolved without touching anything:
+
+```bash
+node --input-type=module <<'EOF'
+import { resolveChannelPath } from 'traintrack/dist/channel/resolve.js';
+console.log(resolveChannelPath());
+EOF
+```
+
+Re-run setup to verify or repair the wiring:
+
+```bash
+traintrack setup --dry-run
+```
+
+If the channel db does not exist yet, initialize it:
+
+```bash
+traintrack init
+```
+

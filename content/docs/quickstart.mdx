@@ -1,0 +1,211 @@
+---
+title: Quickstart
+description: traintrack documentation — Quickstart.
+---
+
+> **Early.** Commands, config formats, and the wire protocol can change between versions. traintrack supports 10 agent CLIs. Claude Code and Codex are **beta** — live-verified end-to-end. The other eight — Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI — are **alpha**: wired by `traintrack setup` per each host's official docs but not yet live-verified, and spawning them as headless workers is not yet implemented.
+
+## Install and set up
+
+```bash
+npm install -g traintrack
+cd /your/project          # must be inside a git repo
+traintrack setup
+```
+
+`traintrack setup` detects which agent CLIs are on your PATH and walks you through picking them. For each one you select, it registers the MCP server in that tool's config, adds a short team-awareness note to its instructions file, and (for every host except GitHub Copilot CLI) installs a `/team` chat command. Run it once per machine; it is safe to re-run.
+
+To undo everything:
+
+```bash
+traintrack setup --uninstall
+```
+
+To preview what it would change without touching anything:
+
+```bash
+traintrack setup --dry-run
+```
+
+---
+
+## Walkthrough A — mesh: open sessions, send a message, check the nudge
+
+A mesh is two or more sessions you open by hand. Each one auto-joins the project's shared team when it starts. No special launch command is required.
+
+**Step 1.** Open two terminal tabs in the same git repo. Start `claude` (or `codex`) normally in each.
+
+**Step 2.** Check who is on the team from any terminal (not inside the agents):
+
+```bash
+traintrack team
+```
+
+```
+Team channel: /your/repo/.traintrack/channel.db
+  - claude-3f9a  (claude, role: lead, live, active)
+  - codex-7c12   (codex,  role: lead, live, active)
+```
+
+`live` means the session registered itself when it started. `active` means it has been seen recently.
+
+**Step 3.** In your first session (say, the Claude Code one), send a message to the other session. Tell the agent:
+
+> "Use send_message to send 'What are you working on?' to codex-7c12."
+
+The agent calls the `send_message` tool. The message is written to the SQLite channel in the background — it does not interrupt the recipient.
+
+**Step 4.** On the recipient's next tool call (any tool other than `check_messages` or `await_results`), the result carries a nudge appended to its output:
+
+```
+📨 1 unread message from teammates — call check_messages to read it.
+```
+
+The recipient calls `check_messages` to drain its inbox:
+
+```
+Messages:
+- [4] from claude-3f9a: What are you working on?
+```
+
+`check_messages` marks messages read; calling it again with nothing new returns `No messages.`
+
+**Step 5.** To read a session's inbox from the terminal without going inside the agent:
+
+```bash
+traintrack inbox --handle codex-7c12
+```
+
+```
+1 unread for codex-7c12:
+  [4] from claude-3f9a: What are you working on?
+```
+
+Note: `traintrack inbox` does **not** mark messages read. Only `check_messages` (called from inside the agent) does that.
+
+---
+
+## Walkthrough B — lead: one session spawns workers and collects results
+
+A lead session uses `spawn_worker` to create headless workers in isolated git worktrees, then `await_results` to block until they reply.
+
+**Step 1.** Start a single `claude` session in your project and give it a task that breaks into parts:
+
+> "Build a CSV parser module, a test suite for it, and a short README. Split the work across workers."
+
+**Step 2.** The agent calls `list_team` to see who is already available, then decides to spawn three workers. For each one it calls `spawn_worker`:
+
+```
+spawn_worker(agent="claude", role="parser",  task="Write src/csv.ts — a CSV parser with a parse(input) function")
+→ Spawned claude worker (parser) as claude-a1b2. Call await_results to collect their reply.
+
+spawn_worker(agent="codex",  role="tests",   task="Write tests/csv.test.ts for the CSV parser in src/csv.ts")
+→ Spawned codex worker (tests) as codex-c3d4. Call await_results to collect their reply.
+
+spawn_worker(agent="claude", role="docs",    task="Write README.md documenting the CSV parser API")
+→ Spawned claude worker (docs) as claude-e5f6. Call await_results to collect their reply.
+```
+
+Each worker gets its own git worktree under `.git/worktrees/`. The lead's handle is passed so workers know where to send their reply.
+
+**Step 3.** The agent calls `await_results` (default timeout: 120 seconds):
+
+```
+Worker results:
+- [12] from claude-a1b2: Done. Wrote src/csv.ts with parse(), parseRow(), and a streaming variant.
+- [13] from codex-c3d4: Done. Wrote tests/csv.test.ts — 14 tests, all passing.
+- [14] from claude-e5f6: Done. Wrote README.md with API reference and examples.
+```
+
+`await_results` polls every 250 ms and returns the first non-empty batch of unread messages. If nothing arrives before the timeout it returns `No results within the timeout.`
+
+**Step 4.** Confirm everyone is on the team:
+
+```bash
+traintrack team
+```
+
+```
+Team channel: /your/repo/.traintrack/channel.db
+  - claude-3f9a  (claude, role: lead,   live,     active)
+  - claude-a1b2  (claude, role: parser, headless, offline)
+  - codex-c3d4   (codex,  role: tests,  headless, offline)
+  - claude-e5f6  (claude, role: docs,   headless, offline)
+```
+
+Workers show as `offline` once their process exits. Their roster rows persist so you can reference their handles when reviewing history.
+
+---
+
+## Assigning work to an existing teammate
+
+If a session is already on the team and you want to give it a new task without spawning a fresh worker, use `delegate_task`:
+
+> "Use delegate_task to assign codex-c3d4 the task: add edge-case tests for empty input and quoted commas."
+
+```
+Delegated to codex-c3d4. Call await_results to collect the reply.
+```
+
+`delegate_task` requires the handle to already exist in the roster — use `list_team` to check, or `spawn_worker` to add someone new.
+
+---
+
+## Joining an existing team from inside an agent
+
+If a human adds your session to a team that is already running, call `join_team` before checking messages:
+
+> "Join the team as handle 'reviewer', role 'reviewer'."
+
+```
+Joined the team as reviewer (role: reviewer). You are now a LIVE member — messages addressed to reviewer land in your inbox; call check_messages whenever you finish a unit of work so you never miss one.
+Team:
+- claude-3f9a (claude, role: lead, active)
+- reviewer (claude, role: reviewer, active)
+```
+
+After joining, call `check_messages` to pick up anything already addressed to your handle.
+
+---
+
+## Quick reference
+
+### CLI commands
+
+| Command | What it does |
+|---|---|
+| `traintrack setup` | Wire your agent CLIs (interactive). Flags: `--all`, `--yes`, `--dry-run`, `--tools-only`, `--uninstall`, `--home <path>`. |
+| `traintrack team` | Show this project's team. |
+| `traintrack inbox --handle <h>` | Print unread messages for a handle (does not mark read). |
+| `traintrack init` | Create the `.traintrack/` channel for the current project. |
+| `traintrack worker --agent <a> --role <r> --handle <h>` | Run a headless worker loop bound to the channel. |
+| `traintrack join --handle <h> --role <r> [--agent <a>]` | Run a live auto-responding member joined to the team. |
+
+**Channel flags (any command):** `--channel <path>` for an explicit db path; `--room <name>` for a shared cross-project bus at `~/.traintrack/rooms/<name>.db`. The default is `<git-root>/.traintrack/channel.db`.
+
+### MCP tools your agent gets
+
+| Tool | What it does |
+|---|---|
+| `list_team` | List all teammates, their handles, roles, and status. |
+| `send_message(to, body)` | Post a message to a teammate's inbox. |
+| `check_messages()` | Drain and mark read all unread messages addressed to you. |
+| `spawn_worker(agent, role, task)` | Spawn a headless worker in its own git worktree. |
+| `delegate_task(to, task)` | Assign a task to an existing teammate by handle. |
+| `await_results([timeoutMs])` | Block (polling every 250 ms) until a worker replies. Default timeout: 120 000 ms. |
+| `join_team(handle, role[, agent])` | Register this session on an existing team under a given handle. |
+
+### The `/team` chat command
+
+Every wired agent except GitHub Copilot CLI also gets a `/team` slash command (in that host's own format) — a quick way to drive the team without spelling out tool calls:
+
+| Subcommand | What it does |
+|---|---|
+| `/team` | Show who is online and what each agent is doing. |
+| `/team spawn <task>` | Spin up a worker for a task. |
+| `/team delegate <task>` | Split a task across the team, then collect. |
+| `/team sync` | Collect everyone's results. |
+| `/team send <handle> <msg>` | Message a teammate. |
+| `/team check` | Read your inbox. |
+| `/team help` | List the subcommands. |
+

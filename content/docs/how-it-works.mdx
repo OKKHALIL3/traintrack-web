@@ -1,0 +1,241 @@
+---
+title: How it works
+description: traintrack documentation — How it works.
+---
+
+This page is for contributors and curious users. It covers the full data flow — from the SQLite file that carries every message, through spawn and git worktrees, to the exact commands that drive a headless agent turn and the structured event that acts as the delivery ACK.
+
+---
+
+## The big picture
+
+```
+        ┌─────────────── one git repo ───────────────┐
+        │   <repo>/.traintrack/channel.db  (the bus)  │
+        └──┬──────────────┬──────────────┬────────────┘
+           │              │              │
+   claude session   codex session   spawned worker
+   (MCP server)     (MCP server)    (headless loop, own worktree)
+   live member      live member     headless member
+```
+
+Every process opens the **same SQLite file**. Nothing talks to another process directly. The file is the message bus.
+
+---
+
+## Module map
+
+| Module | Responsibility |
+| --- | --- |
+| `src/channel/channel.ts` | The SQLite-WAL store. Two tables: `messages` and `members`. Core methods: `insertMessage`, `getUnread`, `markRead`, `addMember`, `listMembers`, `getMember`, `setStatus`. |
+| `src/channel/resolve.ts` | `resolveChannelPath()` — picks which db file to open. See [Channel resolution](#channel-resolution) below. |
+| `src/runner/argv.ts` | `buildHeadlessArgv()` — constructs the exact CLI argv for `claude --print` or `codex exec`. |
+| `src/runner/event-parser.ts` | Pure stream classifier. Parses NDJSON lines from the provider's stdout; identifies turn-end events; extracts session ids, text deltas, token counts. No I/O. |
+| `src/runner/turn-runner.ts` | `runHeadlessTurn()` — spawns one headless child process, pipes stdout through the event-parser, drains stderr concurrently, resolves on `close`. |
+| `src/worker/worker.ts` | The headless worker loop: drain inbox → build prompt → run turn → post reply → mark read. Repeats on a poll interval (default 3 s). |
+| `src/spawn/spawn.ts` | `spawnWorker()` — runs `git worktree add`, registers the worker in the channel, seeds its task message, and launches a detached child process running `traintrack worker`. |
+| `src/mcp/tools.ts` | The 7 MCP tools as injectable functions over a `Channel`. No protocol wiring here. |
+| `src/mcp/server.ts` | The stdio JSON-RPC 2.0 MCP shell. Handles `initialize`, `tools/list`, `tools/call`, `ping`. Auto-registers the session on startup; flips it `offline` on exit. |
+| `src/setup/*` | The `traintrack setup` installer: detect which CLIs are present, write MCP config + awareness blocks, idempotently. |
+| `src/onboarding/briefing.ts` | Builds the team briefing prepended to every worker turn prompt. |
+
+---
+
+## The SQLite-WAL channel
+
+`src/channel/channel.ts` opens the db file with two pragmas:
+
+```sql
+PRAGMA journal_mode = WAL;
+PRAGMA busy_timeout = 5000;
+```
+
+WAL mode lets multiple readers and one writer operate concurrently without blocking each other. `busy_timeout` makes a writer retry for up to 5 seconds before returning `SQLITE_BUSY`, which covers the brief window when a worker is posting a reply while the lead polls.
+
+### Schema
+
+```sql
+CREATE TABLE messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_handle TEXT NOT NULL,
+  to_handle   TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  type        TEXT NOT NULL DEFAULT 'message',
+  read        INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE members (
+  handle   TEXT PRIMARY KEY,
+  agent    TEXT NOT NULL,
+  role     TEXT NOT NULL,
+  kind     TEXT NOT NULL,   -- 'live' | 'headless'
+  status   TEXT NOT NULL,   -- 'active' | 'offline'
+  worktree TEXT             -- filesystem path (cwd for live members, worktree path for headless)
+);
+```
+
+Messages are addressed by handle (`to_handle`). Delivery is a `getUnread` query filtered by that handle plus `read = 0`. There is no pub/sub and no push — every reader polls.
+
+---
+
+## Channel resolution
+
+`resolveChannelPath()` in `src/channel/resolve.ts` applies this precedence order:
+
+1. `--channel <path>` flag (explicit path)
+2. `--room <name>` → `~/.traintrack/rooms/<name>.db` (shared cross-project room)
+3. `TRAINTRACK_CHANNEL` environment variable
+4. Git repo root → `<root>/.traintrack/channel.db` (the common case)
+5. `cwd` → `<cwd>/.traintrack/channel.db` (non-git fallback)
+
+The git-root default is why every session opened anywhere inside a project lands in the same team without any flags. `git rev-parse --show-toplevel` is called to find the root.
+
+---
+
+## Auto-presence
+
+When the MCP server starts (`src/mcp/server.ts` → `buildDepsFromEnv()`), it immediately calls `channel.addMember()` to register this session in the `members` table:
+
+- `handle` comes from `TRAINTRACK_HANDLE`, or is minted as `<agent>-<rand-hex>` if not set.
+- `agent` comes from `TRAINTRACK_AGENT` (written by `traintrack setup`), defaulting to `'claude'`.
+- `role` comes from `TRAINTRACK_ROLE`, defaulting to `lead`.
+- `kind` is always `live` for an MCP server session.
+- `worktree` is set to `process.cwd()`.
+
+On shutdown (the readline `close` event), the server calls `channel.setStatus(handle, 'offline')` so teammates' roster views reflect the session leaving.
+
+Every tool result (except `check_messages` and `await_results`) also appends an unread-message nudge when the lead's inbox is non-empty — so a live session learns of teammate messages the moment it uses any tool, without needing a separate polling hook.
+
+---
+
+## Spawn: git worktree + detached child
+
+`spawnWorker()` in `src/spawn/spawn.ts` does six things in order:
+
+1. Confirms `repoRoot` contains a `.git` directory.
+2. Mints a handle: `worker_<8-char uuid>`.
+3. Runs `git worktree add <repoRoot>/.traintrack/worktrees/<handle> -b traintrack/<handle>`.
+4. Calls `channel.addMember()` to register the worker as a `headless` member with `kind: 'headless'`.
+5. Calls `channel.insertMessage()` to seed the worker's task into its inbox.
+6. Launches a detached child process running `traintrack worker` with `--agent`, `--role`, `--handle`, and `--channel` flags. The child gets `stdio: ['ignore', 'pipe', 'pipe']` and is immediately unref'd so it outlives the parent.
+
+```
+git worktree add .traintrack/worktrees/worker_a1b2c3d4 -b traintrack/worker_a1b2c3d4
+```
+
+The worker process finds its own db via the `--channel` flag (the absolute path to the parent's channel db), so the worktree's git-root lookup is bypassed and both share the same file.
+
+The CLI binary is resolved via `TRAINTRACK_CLI` if set, otherwise relative to the installed package at `dist/cli.js`. The child runs under the same Node binary as the parent (`process.execPath`).
+
+---
+
+## The headless worker loop
+
+`runWorker()` in `src/worker/worker.ts` is the body of the `traintrack worker` subprocess. It:
+
+1. Registers itself in the channel roster.
+2. Enters a loop with a 3 s poll interval (configurable via `--poll`).
+3. Each iteration:
+   - Calls `buildRosterBriefing()` against the **live** roster so the team briefing reflects any members who joined after the worker started.
+   - Calls `channel.getUnread(handle)`. If empty, sleeps and retries.
+   - Builds a turn prompt from the drained messages.
+   - Runs one headless provider turn (see below).
+   - Posts the agent's reply back to each sender. If the reply starts with `@<token>`, `resolvePeerAddress()` matches the token against member handles and roles and routes to that peer instead.
+   - Calls `channel.markRead(ids)` — **after** the turn completes. A crash mid-turn leaves messages unread so they are retried next cycle rather than silently dropped.
+
+The session id returned by the provider (see [The headless turn](#the-headless-turn)) is carried across cycles and passed to `--resume` on the next call, so the agent can maintain context within a session.
+
+---
+
+## The headless turn
+
+A single agent turn is: build argv → spawn child → stream-parse stdout → resolve on close.
+
+### Building the argv
+
+`buildHeadlessArgv()` in `src/runner/argv.ts` constructs the exact command:
+
+**claude:**
+```
+claude --print --output-format stream-json --verbose [--resume <session-id>] [--model <model>] <prompt>
+```
+
+**codex:**
+```
+codex exec [resume <thread-id>] --json --dangerously-bypass-approvals-and-sandbox [-m <model>] <prompt>
+```
+
+The claude binary is resolved via `TRAINTRACK_CLAUDE_BIN` if set, otherwise `claude` from `PATH`. The codex binary is resolved via `TRAINTRACK_CODEX_BIN` if set, otherwise `codex` from `PATH`.
+
+Two codex-specific constraints are hard-coded here:
+- `--dangerously-bypass-approvals-and-sandbox` is always passed. Without it, unattended MCP tool calls auto-cancel (codex issue #24135).
+- Resume uses the **captured thread id**, never `--last`. `--last` is global state and cross-wires parallel codex workers sharing a machine.
+
+Headless turns are wired only for `claude` and `codex` (the two beta agents). The other supported CLIs — Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI — join the mesh and get `/team` (alpha), but cannot yet be spawned as headless workers. The supported values for `agent` here are `claude` and `codex`.
+
+### Spawning the child
+
+`runHeadlessTurn()` in `src/runner/turn-runner.ts` spawns the child with:
+
+```
+stdio: ['ignore', 'pipe', 'pipe']
+```
+
+`stdin` is `/dev/null` (`'ignore'`). Passing a pipe for stdin causes `codex exec` to hang indefinitely waiting for input when running non-interactively (codex issue #20919). Stderr is drained concurrently (buffered, capped at 64 KB) to prevent the OS pipe buffer from filling and deadlocking the child — a fix ported from the original Rust conductor.
+
+### Parsing the stream
+
+The event-parser (`src/runner/event-parser.ts`) is a pure state machine. It reads NDJSON lines and classifies each:
+
+| Provider | Turn-end event | Session id event |
+| --- | --- | --- |
+| claude | `{type: 'result'}` | `{type: 'system', subtype: 'init'}` → `session_id`; also on `{type: 'result'}` → `session_id` |
+| codex | `{type: 'turn.completed'}` | `{type: 'thread.started'}` → `thread_id` |
+
+Text deltas arrive on:
+- claude: `{type: 'assistant', message: {content: [{type: 'text', text: '...'}]}}`
+- codex: `{type: 'item.completed', item: {type: 'agent_message', text: '...'}}`
+
+Non-JSON lines (banners, warnings) are silently skipped — `parseJsonLine()` never throws.
+
+`finalizeTurn()` prefers the provider's authoritative final text (`result` field on claude's turn-end event) over the accumulated streaming text. It also extracts token counts and cost when the provider includes them.
+
+The turn-end event is the in-band ACK. There is no separate acknowledgement step; the child process exiting after emitting the turn-end event is the signal that the turn completed.
+
+---
+
+## Live verification
+
+The verification scripts live at the repo root. They are not test fixtures — they prove the full path from spawn through reply to collection.
+
+| Script | What it proves |
+| --- | --- |
+| `verify-l1.mjs` | Spawn a real codex worker, collect a `PONG` reply. |
+| `verify-l2.mjs` | Roster + delegate + collect across two workers. |
+| `verify-l3.mjs` | Worker-to-worker `@handle` peer addressing. |
+| `verify-l4.mjs` | Multi-round delegation with session continuity (resume). |
+| `verify-l5.mjs` | A `traintrack join` member joins a running team. |
+| `verify-mesh.mjs` | Two sessions in different subdirectories auto-share a team, exchange messages with unread nudges, and go offline. |
+| `verify-capstone.mjs` | A real lead MCP server spawns a real codex worker via the tool path. |
+| `verify-setup.mjs` | The installer writes, idempotently updates, and uninstalls configs for all supported harnesses. |
+
+Run any script directly after building:
+
+```bash
+pnpm build
+node verify-l1.mjs
+```
+
+The scripts require the relevant CLIs (`claude`, `codex`) to be installed and authenticated. They create real worktrees under `.traintrack/worktrees/` and leave them on disk; clean up with `git worktree list` and `git worktree remove`.
+
+---
+
+## Two member kinds
+
+**`live`** — a hand-driven interactive session (a real `claude` or `codex` TUI). It cannot be interrupted mid-task. It receives messages best-effort: the unread nudge appended to tool results surfaces any waiting messages after each tool call. The lead calls `check_messages` explicitly to drain its inbox.
+
+**`headless`** — a worker spawned by a lead. It runs the poll loop and truly auto-receives: it checks its inbox every few seconds and replies without human input.
+
+The `kind` column in the `members` table encodes this distinction and is visible in `list_team` output.
+
