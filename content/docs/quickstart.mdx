@@ -3,7 +3,7 @@ title: Quickstart
 description: traintrack documentation — Quickstart.
 ---
 
-> **Early.** Commands, config formats, and the wire protocol can change between versions. traintrack supports 10 agent CLIs. Claude Code and Codex are **beta** — live-verified end-to-end. The other eight — Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI — are **alpha**: wired by `traintrack setup` per each host's official docs but not yet live-verified, and spawning them as headless workers is not yet implemented.
+> **Early.** Commands, config formats, and the wire protocol can change between versions. traintrack supports 10 agent CLIs. Claude Code and Codex are **beta**. The other eight — Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI — are **alpha**: wired by `traintrack setup` per each host's official docs. All 10 join the mesh and get a `/team` command, except GitHub Copilot CLI (MCP + awareness only, no `/team`). Headless workers (`spawn_worker`) run on **claude, codex, cursor, and opencode**; headless-worker support for Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI is **in development**.
 
 ## Install and set up
 
@@ -178,8 +178,8 @@ After joining, call `check_messages` to pick up anything already addressed to yo
 | `traintrack team` | Show this project's team. |
 | `traintrack inbox --handle <h>` | Print unread messages for a handle (does not mark read). |
 | `traintrack init` | Create the `.traintrack/` channel for the current project. |
-| `traintrack worker --agent <a> --role <r> --handle <h>` | Run a headless worker loop bound to the channel. |
-| `traintrack join --handle <h> --role <r> [--agent <a>]` | Run a live auto-responding member joined to the team. |
+| `traintrack worker --agent <a> --role <r> --handle <h>` | Run a headless worker loop bound to the channel. `--agent` is one of `claude`, `codex`, `cursor`, `opencode`. |
+| `traintrack join --handle <h> --role <r> [--agent <a>]` | Run a live auto-responding member joined to the team. `--agent` (optional) is one of `claude`, `codex`, `cursor`, `opencode`. |
 
 **Channel flags (any command):** `--channel <path>` for an explicit db path; `--room <name>` for a shared cross-project bus at `~/.traintrack/rooms/<name>.db`. The default is `<git-root>/.traintrack/channel.db`.
 
@@ -190,7 +190,7 @@ After joining, call `check_messages` to pick up anything already addressed to yo
 | `list_team` | List all teammates, their handles, roles, and status. |
 | `send_message(to, body)` | Post a message to a teammate's inbox. |
 | `check_messages()` | Drain and mark read all unread messages addressed to you. |
-| `spawn_worker(agent, role, task)` | Spawn a headless worker in its own git worktree. |
+| `spawn_worker(agent, role, task)` | Spawn a headless worker in its own git worktree. `agent` is one of `claude`, `codex`, `cursor`, `opencode`. |
 | `delegate_task(to, task)` | Assign a task to an existing teammate by handle. |
 | `await_results([timeoutMs])` | Block (polling every 250 ms) until a worker replies. Default timeout: 120 000 ms. |
 | `join_team(handle, role[, agent])` | Register this session on an existing team under a given handle. |

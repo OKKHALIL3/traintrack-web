@@ -136,15 +136,13 @@ export TRAINTRACK_CODEX_BIN=/path/to/codex
 
 ---
 
-## Alpha agents can't be spawned as headless workers yet
+## Headless-worker spawning is in development for some agents
 
-**Cause:** Headless worker spawning is live only for the two beta agents, Claude Code and Codex. The other eight supported CLIs — Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI — are alpha: wired per each host's official docs but not yet wired for headless spawning. This is a planned feature.
+**Cause:** Headless worker spawning is supported for four agents today: the beta agents Claude Code and Codex, and the alpha agents Cursor and OpenCode. The valid `--agent` values for `spawn_worker`, `worker --agent`, and `join --agent` are exactly `claude`, `codex`, `cursor`, and `opencode`. For the remaining six supported CLIs — Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI — headless-worker support is in development.
 
-What `traintrack setup` does today for the alpha agents is wire up the MCP server, inject the team-awareness note, and install the `/team` command (every agent except GitHub Copilot CLI, which has no user-command surface and gets MCP + awareness only). Those sessions can join the peer mesh and use `list_team`, `send_message`, and `check_messages` like any other member. The spawn path (`spawn_worker` with an alpha agent id such as `agent: "cursor"`) is not wired and will fail.
+What `traintrack setup` does today for the alpha agents is wire up the MCP server, inject the team-awareness note, and install the `/team` command (every agent except GitHub Copilot CLI, which has no user-command surface and gets MCP + awareness only). Those sessions can join the peer mesh and use `list_team`, `send_message`, and `check_messages` like any other member.
 
-If you have an alpha-agent session running, you can add it to a team manually with `join_team` from inside that session, and it will be visible to teammates and can exchange messages. It just cannot be launched headlessly by a lead agent yet.
-
-Alpha mesh support is wired per each host's official docs but not yet live-verified end-to-end. Confirm it works with your installed versions before depending on it.
+If you have a session whose headless-worker support is still in development, you can add it to a team manually with `join_team` from inside that session, and it will be visible to teammates and can exchange messages. Lead-agent spawning for those CLIs is coming.
 
 ---
 

@@ -10,8 +10,8 @@ traintrack setup [--all] [--yes] [--dry-run] [--tools-only] [--uninstall] [--hom
 traintrack team [--room <name>] [--channel <path>]
 traintrack inbox --handle <handle> [--room <name>] [--channel <path>]
 traintrack init [--room <name>] [--channel <path>]
-traintrack worker --agent <claude|codex> --role <role> --handle <handle> [--channel <path>]
-traintrack join --handle <handle> --role <role> [--agent <claude|codex>] [--room <name>] [--channel <path>]
+traintrack worker --agent <claude|codex|cursor|opencode> --role <role> --handle <handle> [--channel <path>]
+traintrack join --handle <handle> --role <role> [--agent <claude|codex|cursor|opencode>] [--room <name>] [--channel <path>]
 ```
 
 Run `traintrack --help` (or `traintrack -h` or `traintrack help`) to print this usage block.
@@ -69,7 +69,7 @@ A single harness failing to configure does not abort the run — that harness is
 | `--uninstall` | Remove traintrack from the selected harnesses instead of adding it. |
 | `--home <path>` | Override the home directory used for config file location. Defaults to `os.homedir()`. |
 
-> **Note.** Only Claude Code and Codex are **beta** — live-verified end-to-end (spawn → work → collect) with real agents. The other eight harnesses are **alpha**: wired per each host's official MCP + command docs, but not yet live-verified. Check the output summary carefully.
+> **Note.** Claude Code and Codex are **beta**. The other eight harnesses are **alpha**: wired per each host's official MCP + command docs. Check the output summary carefully.
 
 ---
 
@@ -151,9 +151,11 @@ The command blocks until interrupted. It does not exit on its own.
 
 | Flag | Required | Description |
 |---|---|---|
-| `--agent` | Yes | Agent to run. Must be exactly `claude` or `codex`. |
+| `--agent` | Yes | Agent to run. Must be one of `claude`, `codex`, `cursor`, or `opencode`. |
 | `--role` | Yes | Free-text role description registered on the team (e.g. `"test writer"`). |
 | `--handle` | Yes | Unique name for this worker on the team. |
+
+Headless workers run on `claude` and `codex` (**beta**) and `cursor` and `opencode` (**alpha**). Headless-worker support for the remaining harnesses — Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI — is **in development**.
 
 ---
 
@@ -174,5 +176,5 @@ If `--handle` is already registered on the team, the command exits with an error
 |---|---|---|
 | `--handle` | Yes | Unique name for this member on the team. |
 | `--role` | Yes | Free-text role description (e.g. `"lead"`, `"reviewer"`). |
-| `--agent` | No | Agent to run. Must be `claude` or `codex`. Defaults to `codex`. |
+| `--agent` | No | Agent to run. Must be one of `claude`, `codex`, `cursor`, or `opencode`. Defaults to `codex`. |
 

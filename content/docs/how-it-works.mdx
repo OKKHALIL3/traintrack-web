@@ -172,7 +172,7 @@ Two codex-specific constraints are hard-coded here:
 - `--dangerously-bypass-approvals-and-sandbox` is always passed. Without it, unattended MCP tool calls auto-cancel (codex issue #24135).
 - Resume uses the **captured thread id**, never `--last`. `--last` is global state and cross-wires parallel codex workers sharing a machine.
 
-Headless turns are wired only for `claude` and `codex` (the two beta agents). The other supported CLIs — Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI — join the mesh and get `/team` (alpha), but cannot yet be spawned as headless workers. The supported values for `agent` here are `claude` and `codex`.
+Headless turns are wired for the four agents with worker support: `claude` and `codex` (beta), plus `cursor` and `opencode` (alpha). The supported values for `agent` here are `claude`, `codex`, `cursor`, and `opencode`. The remaining CLIs — Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI (alpha) — join the mesh and get `/team`, with headless-worker support in development. GitHub Copilot CLI is the one exception that joins over MCP and awareness only, with no `/team` command surface.
 
 ### Spawning the child
 
@@ -205,19 +205,19 @@ The turn-end event is the in-band ACK. There is no separate acknowledgement step
 
 ---
 
-## Live verification
+## Example scripts
 
-The verification scripts live at the repo root. They are not test fixtures — they prove the full path from spawn through reply to collection.
+The example scripts live at the repo root. They are runnable walkthroughs that exercise the full path from spawn through reply to collection.
 
-| Script | What it proves |
+| Script | What it exercises |
 | --- | --- |
-| `verify-l1.mjs` | Spawn a real codex worker, collect a `PONG` reply. |
+| `verify-l1.mjs` | Spawn a codex worker, collect a `PONG` reply. |
 | `verify-l2.mjs` | Roster + delegate + collect across two workers. |
 | `verify-l3.mjs` | Worker-to-worker `@handle` peer addressing. |
 | `verify-l4.mjs` | Multi-round delegation with session continuity (resume). |
 | `verify-l5.mjs` | A `traintrack join` member joins a running team. |
 | `verify-mesh.mjs` | Two sessions in different subdirectories auto-share a team, exchange messages with unread nudges, and go offline. |
-| `verify-capstone.mjs` | A real lead MCP server spawns a real codex worker via the tool path. |
+| `verify-capstone.mjs` | A lead MCP server spawns a codex worker via the tool path. |
 | `verify-setup.mjs` | The installer writes, idempotently updates, and uninstalls configs for all supported harnesses. |
 
 Run any script directly after building:

@@ -42,7 +42,7 @@ Select the tools you want to wire up, confirm, and setup does three things for e
 
 Setup is idempotent. Re-running it updates existing entries in place rather than duplicating them.
 
-Maturity tiers are honest: **Claude Code and Codex are beta** — the spawn → work → collect path is live-verified end-to-end with real agents. The other **eight are alpha** — wired per each host's official MCP + command docs and proven to install/uninstall cleanly, but not yet live-verified.
+Maturity tiers are honest: **Claude Code and Codex are beta**. The other **eight are alpha**.
 
 ### What setup writes, per CLI
 
@@ -174,7 +174,7 @@ Setup also injects an awareness block into `~/.codex/AGENTS.md`.
 
 ### The other eight CLIs
 
-Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI are wired by `setup` (mesh send/receive plus the `/team` command, except Copilot which gets MCP + awareness only). They are **alpha** — configured per each host's official MCP + command docs but not yet live-verified end-to-end, and spawning them as headless workers is not yet supported. Their exact config paths and formats are in the [per-CLI table above](#what-setup-writes-per-cli); run `traintrack setup --dry-run` to see the precise content setup would write for each.
+Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI are wired by `setup` (mesh send/receive plus the `/team` command, except Copilot which gets MCP + awareness only). They are **alpha**. Cursor and OpenCode also support spawning headless workers (the valid `worker --agent` / `spawn_worker` values are `claude`, `codex`, `cursor`, and `opencode`); for Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI headless-worker support is in development. Their exact config paths and formats are in the [per-CLI table above](#what-setup-writes-per-cli); run `traintrack setup --dry-run` to see the precise content setup would write for each.
 
 ## Verify the setup
 

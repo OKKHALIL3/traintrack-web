@@ -98,8 +98,7 @@ export default function HomePage() {
             ))}
           </div>
           <p className="text-[12.5px] text-fd-muted-foreground mt-3">
-            Claude Code &amp; Codex are live-verified end-to-end (beta); the other eight are wired per each host&apos;s
-            official docs (alpha).
+            Claude Code &amp; Codex are beta; the other eight are alpha.
           </p>
         </div>
       </section>

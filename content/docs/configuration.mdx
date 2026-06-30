@@ -166,7 +166,7 @@ git branch -d traintrack/<handle>
 
 ## Notes on headless agent support
 
-The `worker` subcommand and the `spawn_worker` MCP tool support `--agent claude` and `--agent codex`. These are the two live-verified (beta) paths; passing any other value is rejected with an error.
+The `worker` subcommand and the `spawn_worker` MCP tool accept exactly four `--agent` values: `claude`, `codex`, `cursor`, and `opencode`. Claude Code and Codex are beta; Cursor and OpenCode are alpha.
 
-The other eight agents — Cursor, OpenCode, Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI — appear in the harness detection table used by `traintrack setup`, but they are wired as MCP hosts (the setup command writes their MCP config, a team-awareness note, and the `/team` command), not as headless worker agents. They are alpha: configured per each host's official docs but not yet live-verified. GitHub Copilot CLI is the one exception that gets MCP + awareness only, with no `/team` command. Running `--agent cursor` (or any of the other eight) as a worker is not supported.
+The other six agents — Windsurf, Cline, Kiro, Zed, Continue, and GitHub Copilot CLI — appear in the harness detection table used by `traintrack setup` and are wired as MCP hosts (the setup command writes their MCP config, a team-awareness note, and the `/team` command). Headless-worker support for these six is in development. GitHub Copilot CLI is the one exception that gets MCP + awareness only, with no `/team` command.
 
